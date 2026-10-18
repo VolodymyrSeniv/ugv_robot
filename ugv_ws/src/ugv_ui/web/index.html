@@ -1,0 +1,273 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>UGV Operator</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #ffffff; --ink: #1c2024; --muted: #5c6670; --line: #d9dde2;
+    --accent: #2563eb; --ok: #15803d; --warn: #b45309; --bad: #b91c1c; --btn: #eef1f5;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #14171a; --panel: #1d2125; --ink: #e6e9ec; --muted: #9aa4ae; --line: #343a40;
+      --accent: #6ea0ff; --ok: #4ade80; --warn: #fbbf24; --bad: #f87171; --btn: #2a3036;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+         font: 14px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  .app { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 12px; padding: 12px; height: 100vh; }
+  .stage { position: relative; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+  canvas { width: 100%; height: 100%; display: block; cursor: crosshair; touch-action: none; }
+  .hint { position: absolute; left: 10px; bottom: 8px; color: #fff; background: rgba(0,0,0,.55);
+          padding: 3px 8px; border-radius: 6px; font-size: 12px; pointer-events: none; }
+  .banner { position: absolute; left: 10px; right: 10px; top: 10px; padding: 8px 12px; border-radius: 8px;
+            background: var(--bad); color: #fff; font-weight: 600; display: none; }
+  aside { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px;
+          display: flex; flex-direction: column; gap: 12px; overflow: auto; }
+  h1 { font-size: 16px; margin: 0; }
+  .row { display: flex; justify-content: space-between; gap: 8px; }
+  .k { color: var(--muted); }
+  .chip { padding: 1px 8px; border-radius: 999px; border: 1px solid var(--line); font-size: 12px; }
+  .chip.on { color: var(--ok); border-color: var(--ok); }
+  .chip.off { color: var(--bad); border-color: var(--bad); }
+  button { font: inherit; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--line);
+           background: var(--btn); color: var(--ink); cursor: pointer; }
+  button:hover:not(:disabled) { border-color: var(--accent); }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.danger { background: var(--bad); border-color: var(--bad); color: #fff; }
+  .btns { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .btns .wide { grid-column: 1 / -1; }
+  .res { font-weight: 600; }
+  .res.SUCCESS { color: var(--ok); }
+  .res.warn { color: var(--warn); }
+  .res.bad { color: var(--bad); }
+  .log { font: 12px/1.35 ui-monospace, Menlo, monospace; color: var(--muted); min-height: 3.4em; white-space: pre-wrap; }
+  @media (max-width: 760px) { .app { grid-template-columns: 1fr; grid-template-rows: 55vh auto; height: auto; } }
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="stage">
+    <canvas id="cv"></canvas>
+    <div class="banner" id="banner"></div>
+    <div class="hint">left-drag: set goal (drag direction = heading) · right-drag / shift-drag: pan · wheel: zoom</div>
+  </div>
+  <aside>
+    <div class="row"><h1>UGV operator</h1><span id="conn" class="chip off">offline</span></div>
+    <div>
+      <div class="row"><span class="k">Mission</span><b id="status">-</b></div>
+      <div class="row"><span class="k">Last result</span><span id="result" class="res">-</span></div>
+      <div class="row"><span class="k">Robot (map)</span><span id="pose">-</span></div>
+      <div class="row"><span class="k">Goal</span><span id="goal">not set</span></div>
+    </div>
+    <div class="btns">
+      <button id="send" class="primary wide" disabled>Go to goal, then return to start</button>
+      <button id="clear" disabled>Clear goal</button>
+      <button id="setstart">Set start here</button>
+      <button id="home">Return home</button>
+      <button id="abort" class="danger">Abort</button>
+    </div>
+    <div class="log" id="log">Connecting to rosbridge…</div>
+  </aside>
+</div>
+
+<script>
+'use strict';
+// ---- tiny rosbridge (v2) client: no external libraries, works offline ---------------------------
+const HOST = new URLSearchParams(location.search).get('host') || location.hostname || 'localhost';
+const WS_URL = `ws://${HOST}:9090`;
+let ws = null, nextId = 1;
+const pendingCalls = {};
+const handlers = {};
+
+function send(obj) { if (ws && ws.readyState === 1) ws.send(JSON.stringify(obj)); }
+function subscribe(topic, type, fn, opts = {}) {
+  handlers[topic] = fn;
+  send({ op: 'subscribe', topic, type, ...opts });
+}
+function advertise(topic, type) { send({ op: 'advertise', topic, type }); }
+function publish(topic, msg) { send({ op: 'publish', topic, msg }); }
+function callService(service, args = {}) {
+  return new Promise((resolve) => {
+    const id = 'c' + nextId++;
+    pendingCalls[id] = resolve;
+    send({ op: 'call_service', id, service, args });
+    setTimeout(() => { if (pendingCalls[id]) { delete pendingCalls[id]; resolve({ result: false, values: { message: 'timeout' } }); } }, 5000);
+  });
+}
+
+function connect() {
+  ws = new WebSocket(WS_URL);
+  ws.onopen = () => {
+    setConn(true);
+    log('Connected to ' + WS_URL);
+    advertise('/ugv/goal', 'geometry_msgs/msg/PoseStamped');
+    subscribe('/map', 'nav_msgs/msg/OccupancyGrid', onMap, { throttle_rate: 1500, queue_length: 1 });
+    subscribe('/ugv/pose', 'geometry_msgs/msg/PoseStamped', onPose, { throttle_rate: 100, queue_length: 1 });
+    subscribe('/plan', 'nav_msgs/msg/Path', onPlan, { throttle_rate: 500, queue_length: 1 });
+    subscribe('/ugv/mission_status', 'std_msgs/msg/String', (m) => { S.status = m.data; renderPanel(); });
+    subscribe('/ugv/mission_result', 'std_msgs/msg/String', (m) => { S.result = m.data; renderPanel(); });
+    subscribe('/ugv/start_pose', 'geometry_msgs/msg/PoseStamped', (m) => { S.start = poseOf(m.pose); draw(); });
+  };
+  ws.onmessage = (e) => {
+    const m = JSON.parse(e.data);
+    if (m.op === 'publish' && handlers[m.topic]) handlers[m.topic](m.msg);
+    else if (m.op === 'service_response' && pendingCalls[m.id]) { pendingCalls[m.id](m); delete pendingCalls[m.id]; }
+  };
+  ws.onclose = () => { setConn(false); setTimeout(connect, 1500); };
+  ws.onerror = () => ws.close();
+}
+
+// ---- state ---------------------------------------------------------------------------------------
+const S = { map: null, pose: null, trail: [], plan: [], goal: null, start: null, status: '-', result: '-',
+            view: { scale: 40, cx: 0, cy: 0 }, connected: false };
+const yawOf = (q) => 2 * Math.atan2(q.z, q.w);
+const poseOf = (p) => ({ x: p.position.x, y: p.position.y, yaw: yawOf(p.orientation) });
+
+function onMap(m) {
+  const w = m.info.width, h = m.info.height;
+  const off = document.createElement('canvas'); off.width = w; off.height = h;
+  const ctx = off.getContext('2d'), img = ctx.createImageData(w, h);
+  for (let j = 0; j < h; j++) for (let i = 0; i < w; i++) {
+    const v = m.data[j * w + i], k = ((h - 1 - j) * w + i) * 4;      // flip: map y is up
+    const c = v < 0 ? 154 : v > 50 ? 33 : 241;                       // unknown / occupied / free
+    img.data[k] = c; img.data[k + 1] = c; img.data[k + 2] = c + (v < 0 ? 4 : 0); img.data[k + 3] = 255;
+  }
+  ctx.putImageData(img, 0, 0);
+  const first = !S.map;
+  S.map = { w, h, res: m.info.resolution, ox: m.info.origin.position.x, oy: m.info.origin.position.y, img: off };
+  if (first) { S.view.cx = S.map.ox + w * S.map.res / 2; S.view.cy = S.map.oy + h * S.map.res / 2; }
+  draw();
+}
+function onPose(m) {
+  S.pose = poseOf(m.pose);
+  const t = S.trail, last = t[t.length - 1];
+  if (!last || Math.hypot(last.x - S.pose.x, last.y - S.pose.y) > 0.05) { t.push(S.pose); if (t.length > 3000) t.shift(); }
+  renderPanel(); draw();
+}
+function onPlan(m) { S.plan = m.poses.map((p) => poseOf(p.pose)); draw(); }
+
+// ---- drawing ---------------------------------------------------------------------------------------
+const cv = document.getElementById('cv'), ctx = cv.getContext('2d');
+function resize() {
+  const r = cv.getBoundingClientRect(), d = window.devicePixelRatio || 1;
+  cv.width = Math.round(r.width * d); cv.height = Math.round(r.height * d); draw();
+}
+window.addEventListener('resize', resize);
+const toScreen = (x, y) => { const d = window.devicePixelRatio || 1;
+  return [cv.width / 2 + (x - S.view.cx) * S.view.scale * d, cv.height / 2 - (y - S.view.cy) * S.view.scale * d]; };
+const toWorld = (px, py) => { const d = window.devicePixelRatio || 1;
+  return [S.view.cx + (px * d - cv.width / 2) / (S.view.scale * d), S.view.cy - (py * d - cv.height / 2) / (S.view.scale * d)]; };
+const css = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+
+function arrow(x, y, yaw, size, fill, stroke) {
+  const d = window.devicePixelRatio || 1, [sx, sy] = toScreen(x, y), s = size * d;
+  ctx.save(); ctx.translate(sx, sy); ctx.rotate(-yaw);
+  ctx.beginPath(); ctx.moveTo(s, 0); ctx.lineTo(-s * 0.7, s * 0.6); ctx.lineTo(-s * 0.7, -s * 0.6); ctx.closePath();
+  if (fill) { ctx.fillStyle = fill; ctx.fill(); }
+  if (stroke) { ctx.strokeStyle = stroke; ctx.lineWidth = 2 * d; ctx.stroke(); }
+  ctx.restore();
+}
+function poly(pts, color, width, dash) {
+  if (pts.length < 2) return;
+  const d = window.devicePixelRatio || 1;
+  ctx.beginPath();
+  pts.forEach((p, i) => { const [x, y] = toScreen(p.x, p.y); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
+  ctx.strokeStyle = color; ctx.lineWidth = width * d; ctx.setLineDash(dash || []); ctx.stroke(); ctx.setLineDash([]);
+}
+function draw() {
+  const d = window.devicePixelRatio || 1;
+  ctx.fillStyle = '#c8ccd2'; ctx.fillRect(0, 0, cv.width, cv.height);
+  if (S.map) {
+    const m = S.map, [x0, y0] = toScreen(m.ox, m.oy + m.h * m.res), k = m.res * S.view.scale * d;
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(m.img, x0, y0, m.w * k, m.h * k);
+  }
+  poly(S.trail, css('--accent'), 2);
+  poly(S.plan, '#f59e0b', 2.5);
+  if (S.start) { const [x, y] = toScreen(S.start.x, S.start.y);
+    ctx.beginPath(); ctx.arc(x, y, 7 * d, 0, 7); ctx.fillStyle = '#16a34a'; ctx.fill();
+    ctx.fillStyle = '#fff'; ctx.font = `bold ${10 * d}px sans-serif`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText('S', x, y + d); }
+  if (S.goal) { const g = S.goal, [x, y] = toScreen(g.x, g.y);
+    ctx.beginPath(); ctx.arc(x, y, 9 * d, 0, 7); ctx.strokeStyle = '#dc2626'; ctx.lineWidth = 3 * d; ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(x, y); const [hx, hy] = toScreen(g.x + Math.cos(g.yaw) * 0.8, g.y + Math.sin(g.yaw) * 0.8); ctx.lineTo(hx, hy); ctx.stroke(); }
+  if (S.pose) arrow(S.pose.x, S.pose.y, S.pose.yaw, 11, '#2563eb', '#fff');
+  // scale bar (1 m)
+  const [bx, by] = [20 * d, cv.height - 24 * d], len = S.view.scale * d;
+  ctx.fillStyle = '#111'; ctx.fillRect(bx, by, len, 3 * d);
+  ctx.font = `${11 * d}px sans-serif`; ctx.textAlign = 'left'; ctx.textBaseline = 'bottom'; ctx.fillText('1 m', bx, by - 3 * d);
+}
+
+// ---- interaction ------------------------------------------------------------------------------------
+let drag = null;
+cv.addEventListener('contextmenu', (e) => e.preventDefault());
+cv.addEventListener('pointerdown', (e) => {
+  cv.setPointerCapture(e.pointerId);
+  const pan = e.button !== 0 || e.shiftKey;
+  const r = cv.getBoundingClientRect(), px = e.clientX - r.left, py = e.clientY - r.top;
+  drag = { pan, x0: px, y0: py, c0: [S.view.cx, S.view.cy], w0: toWorld(px, py), moved: false };
+  if (!pan) S.goal = { x: drag.w0[0], y: drag.w0[1], yaw: 0 };
+  renderPanel(); draw();
+});
+cv.addEventListener('pointermove', (e) => {
+  if (!drag) return;
+  const r = cv.getBoundingClientRect(), px = e.clientX - r.left, py = e.clientY - r.top;
+  if (Math.hypot(px - drag.x0, py - drag.y0) > 4) drag.moved = true;
+  if (drag.pan) { S.view.cx = drag.c0[0] - (px - drag.x0) / S.view.scale; S.view.cy = drag.c0[1] + (py - drag.y0) / S.view.scale; }
+  else if (drag.moved) { const w = toWorld(px, py); S.goal.yaw = Math.atan2(w[1] - S.goal.y, w[0] - S.goal.x); }
+  renderPanel(); draw();
+});
+cv.addEventListener('pointerup', () => { drag = null; });
+cv.addEventListener('wheel', (e) => {
+  e.preventDefault();
+  const r = cv.getBoundingClientRect(), px = e.clientX - r.left, py = e.clientY - r.top, before = toWorld(px, py);
+  S.view.scale = Math.min(300, Math.max(5, S.view.scale * (e.deltaY < 0 ? 1.15 : 1 / 1.15)));
+  const after = toWorld(px, py);
+  S.view.cx += before[0] - after[0]; S.view.cy += before[1] - after[1]; draw();
+}, { passive: false });
+
+// ---- panel -------------------------------------------------------------------------------------------
+const $ = (id) => document.getElementById(id);
+function log(t) { $('log').textContent = t; }
+function setConn(on) { S.connected = on; const c = $('conn'); c.textContent = on ? 'connected' : 'offline'; c.className = 'chip ' + (on ? 'on' : 'off'); renderPanel(); }
+function renderPanel() {
+  const idle = S.status.split(' ')[0] === 'IDLE' || S.status === '-';
+  $('status').textContent = S.status;
+  const r = S.result || '-';
+  $('result').textContent = r;
+  $('result').className = 'res ' + (r === 'SUCCESS' ? 'SUCCESS' : r.startsWith('COMPLETED') || r.startsWith('ABORTED_GOAL') ? 'warn' : r === '-' ? '' : 'bad');
+  const jump = r.includes('JUMP');
+  const b = $('banner');
+  b.style.display = jump ? 'block' : 'none';
+  b.textContent = 'Localization jump detected: the map may be wrong. Check the robot position before the next mission.';
+  $('pose').textContent = S.pose ? `${S.pose.x.toFixed(2)}, ${S.pose.y.toFixed(2)} m, ${(S.pose.yaw * 57.2958).toFixed(0)}°` : '-';
+  $('goal').textContent = S.goal ? `${S.goal.x.toFixed(2)}, ${S.goal.y.toFixed(2)} m, ${(S.goal.yaw * 57.2958).toFixed(0)}°` : 'not set';
+  $('send').disabled = !(S.connected && S.goal && idle);
+  $('clear').disabled = !S.goal;
+  $('setstart').disabled = !(S.connected && idle);
+}
+$('clear').onclick = () => { S.goal = null; renderPanel(); draw(); };
+$('send').onclick = async () => {
+  const g = S.goal; if (!g) return;
+  const msg = { header: { frame_id: 'map' }, pose: { position: { x: g.x, y: g.y, z: 0 },
+                orientation: { x: 0, y: 0, z: Math.sin(g.yaw / 2), w: Math.cos(g.yaw / 2) } } };
+  for (let i = 0; i < 3; i++) { publish('/ugv/goal', msg); await new Promise((r) => setTimeout(r, 400)); }   // a single publish can be lost
+  log(`Goal sent: ${g.x.toFixed(2)}, ${g.y.toFixed(2)}. The robot will return to the start afterwards.`);
+};
+async function svc(name, label) {
+  const res = await callService(name);
+  const v = res.values || {};
+  log(`${label}: ${res.result ? (v.success ? 'ok' : 'refused') : 'failed'}${v.message ? ' – ' + v.message : ''}`);
+}
+$('abort').onclick = () => svc('/ugv/abort', 'Abort');
+$('home').onclick = () => svc('/ugv/return_home', 'Return home');
+$('setstart').onclick = () => svc('/ugv/set_start', 'Set start');
+
+resize(); renderPanel(); connect();
+</script>
+</body>
+</html>

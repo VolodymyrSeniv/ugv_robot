@@ -1,0 +1,137 @@
+<?xml version="1.0"?>
+<!-- 6x6 skid-steer UGV with stereo camera + IMU. Gazebo Fortress (Humble ros_gz). -->
+<robot name="ugv" xmlns:xacro="http://www.ros.org/wiki/xacro">
+  <xacro:property name="body_l" value="0.80"/>
+  <xacro:property name="body_w" value="0.45"/>
+  <xacro:property name="body_h" value="0.15"/>
+  <xacro:property name="wheel_r" value="0.12"/>
+  <xacro:property name="wheel_t" value="0.08"/>
+  <xacro:property name="track" value="0.60"/>
+  <xacro:property name="baseline" value="0.12"/>
+
+  <link name="base_footprint"/>
+  <joint name="footprint_joint" type="fixed">
+    <parent link="base_footprint"/><child link="base_link"/>
+    <origin xyz="0 0 ${wheel_r}"/>
+  </joint>
+
+  <link name="base_link">
+    <visual><geometry><box size="${body_l} ${body_w} ${body_h}"/></geometry>
+      <material name="grey"><color rgba="0.4 0.4 0.45 1"/></material></visual>
+    <collision><geometry><box size="${body_l} ${body_w} ${body_h}"/></geometry></collision>
+    <inertial><mass value="30"/>
+      <inertia ixx="1.2" iyy="2.2" izz="3.0" ixy="0" ixz="0" iyz="0"/></inertial>
+  </link>
+
+  <xacro:macro name="wheel" params="name x y">
+    <link name="${name}_wheel">
+      <visual><origin rpy="1.5708 0 0"/>
+        <geometry><cylinder radius="${wheel_r}" length="${wheel_t}"/></geometry>
+        <material name="black"><color rgba="0.05 0.05 0.05 1"/></material></visual>
+      <collision><origin rpy="1.5708 0 0"/>
+        <geometry><cylinder radius="${wheel_r}" length="${wheel_t}"/></geometry></collision>
+      <inertial><mass value="1.0"/>
+        <inertia ixx="0.005" iyy="0.008" izz="0.005" ixy="0" ixz="0" iyz="0"/></inertial>
+    </link>
+    <joint name="${name}_wheel_joint" type="continuous">
+      <parent link="base_link"/><child link="${name}_wheel"/>
+      <origin xyz="${x} ${y} 0"/><axis xyz="0 1 0"/>
+    </joint>
+    <!-- Gazebo ignores <surface> inside URDF collisions; friction goes here.
+         mu1 along rolling direction (link x), mu2 lateral: low so skid-steer can turn in place. -->
+    <gazebo reference="${name}_wheel">
+      <mu1>0.8</mu1><mu2>0.15</mu2><fdir1>1 0 0</fdir1>
+    </gazebo>
+  </xacro:macro>
+
+  <!-- left / right x front, middle, rear -->
+  <xacro:wheel name="lf" x="0.28"  y="${track/2}"/>
+  <xacro:wheel name="lm" x="0.0"   y="${track/2}"/>
+  <xacro:wheel name="lr" x="-0.28" y="${track/2}"/>
+  <xacro:wheel name="rf" x="0.28"  y="${-track/2}"/>
+  <xacro:wheel name="rm" x="0.0"   y="${-track/2}"/>
+  <xacro:wheel name="rr" x="-0.28" y="${-track/2}"/>
+
+  <!-- IMU -->
+  <link name="imu_link"/>
+  <joint name="imu_joint" type="fixed">
+    <parent link="base_link"/><child link="imu_link"/><origin xyz="0.30 0 0.10"/>
+  </joint>
+
+  <!-- Stereo pair (optical frame convention is handled via ros_gz bridge frame ids) -->
+  <xacro:macro name="cam" params="name y">
+    <link name="${name}_cam_link"/>
+    <joint name="${name}_cam_joint" type="fixed">
+      <parent link="base_link"/><child link="${name}_cam_link"/>
+      <origin xyz="0.38 ${y} 0.12"/>
+    </joint>
+    <link name="${name}_cam_optical"/>
+    <joint name="${name}_optical_joint" type="fixed">
+      <parent link="${name}_cam_link"/><child link="${name}_cam_optical"/>
+      <origin rpy="-1.5707963 0 -1.5707963"/>
+    </joint>
+  </xacro:macro>
+  <xacro:cam name="left"  y="${baseline/2}"/>
+  <xacro:cam name="right" y="${-baseline/2}"/>
+
+  <gazebo>
+    <plugin filename="ignition-gazebo-diff-drive-system"
+            name="ignition::gazebo::systems::DiffDrive">
+      <left_joint>lf_wheel_joint</left_joint>
+      <left_joint>lm_wheel_joint</left_joint>
+      <left_joint>lr_wheel_joint</left_joint>
+      <right_joint>rf_wheel_joint</right_joint>
+      <right_joint>rm_wheel_joint</right_joint>
+      <right_joint>rr_wheel_joint</right_joint>
+      <wheel_separation>${track}</wheel_separation>
+      <wheel_radius>${wheel_r}</wheel_radius>
+      <max_linear_velocity>1.0</max_linear_velocity>
+      <max_angular_velocity>0.8</max_angular_velocity>
+      <topic>cmd_vel</topic>
+      <!-- Wheel-based odometry is NOT ground truth (wheels slip on a skid-steer); discard it.
+           The real robot has no encoders, so nothing may consume this. -->
+      <odom_topic>wheel_odom_unused</odom_topic>
+      <tf_topic>wheel_tf_unused</tf_topic>
+      <frame_id>world</frame_id>
+      <child_frame_id>base_link</child_frame_id>
+    </plugin>
+  </gazebo>
+
+  <!-- True model pose from the simulator, for evaluation only (evo / trace_run.py). -->
+  <gazebo>
+    <plugin filename="ignition-gazebo-odometry-publisher-system"
+            name="ignition::gazebo::systems::OdometryPublisher">
+      <odom_frame>world</odom_frame>
+      <robot_base_frame>base_link</robot_base_frame>
+      <dimensions>3</dimensions>
+      <odom_publish_frequency>30</odom_publish_frequency>
+      <odom_topic>ground_truth/odom</odom_topic>
+      <tf_topic>ground_truth/tf_unused</tf_topic>
+    </plugin>
+  </gazebo>
+
+  <gazebo reference="imu_link">
+    <sensor name="imu" type="imu">
+      <always_on>1</always_on><update_rate>200</update_rate>
+      <topic>imu</topic>
+      <ignition_frame_id>imu_link</ignition_frame_id>
+    </sensor>
+  </gazebo>
+
+  <xacro:macro name="cam_sensor" params="name">
+    <gazebo reference="${name}_cam_link">
+      <sensor name="${name}_cam" type="camera">
+        <always_on>1</always_on><update_rate>20</update_rate>
+        <topic>stereo/${name}/image_raw</topic>
+        <ignition_frame_id>${name}_cam_optical</ignition_frame_id>
+        <camera>
+          <horizontal_fov>1.4</horizontal_fov>
+          <image><width>640</width><height>480</height><format>L8</format></image>
+          <clip><near>0.1</near><far>30</far></clip>
+        </camera>
+      </sensor>
+    </gazebo>
+  </xacro:macro>
+  <xacro:cam_sensor name="left"/>
+  <xacro:cam_sensor name="right"/>
+</robot>

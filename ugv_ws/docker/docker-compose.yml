@@ -1,0 +1,27 @@
+services:
+  ugv:
+    build: .
+    image: ugv-ros2:humble
+    container_name: ugv
+    network_mode: host        # Linux host: DDS discovery + Foxglove port 8765
+    privileged: true          # USB camera / serial access on the robot
+    environment:
+      - ROS_DOMAIN_ID=42
+      - DISPLAY=${DISPLAY}
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=all   # graphics + compute (Gazebo/OGRE needs "graphics")
+    deploy:
+      resources:
+        reservations:
+          devices:                        # needs nvidia-container-toolkit on the host
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    volumes:
+      - ../src:/ws/src
+      - ../data:/ws/data      # rosbags / maps (keep out of the image)
+      - ../tools:/ws/tools
+      - /tmp/.X11-unix:/tmp/.X11-unix
+    command: bash
+    stdin_open: true
+    tty: true

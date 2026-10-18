@@ -1,0 +1,22 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>ugv_bringup</name>
+  <version>0.1.0</version>
+  <description>Launch files for the UGV (sim, real, mapping, autonomous)</description>
+  <maintainer email="volodymyr.seniv@usepepper.com">volodymyr</maintainer>
+  <license>MIT</license>
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <exec_depend>ugv_description</exec_depend>
+  <exec_depend>ugv_mission</exec_depend>
+  <exec_depend>ros_gz_sim</exec_depend>
+  <exec_depend>ros_gz_bridge</exec_depend>
+  <exec_depend>robot_state_publisher</exec_depend>
+  <exec_depend>ugv_localization</exec_depend>
+  <exec_depend>ugv_navigation</exec_depend>
+  <exec_depend>ugv_ui</exec_depend>
+  <exec_depend>nav2_bringup</exec_depend>
+  <exec_depend>rtabmap_odom</exec_depend>
+  <exec_depend>rtabmap_slam</exec_depend>
+  <exec_depend>robot_localization</exec_depend>
+  <export><build_type>ament_cmake</build_type></export>
+</package>

@@ -1,0 +1,11 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>ugv_description</name>
+  <version>0.1.0</version>
+  <description>URDF and Gazebo world for the 6x6 UGV</description>
+  <maintainer email="volodymyr.seniv@usepepper.com">volodymyr</maintainer>
+  <license>MIT</license>
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <exec_depend>xacro</exec_depend>
+  <export><build_type>ament_cmake</build_type></export>
+</package>
