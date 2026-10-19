@@ -41,8 +41,12 @@ def generate_launch_description():
 
     vo = Node(
         package='rtabmap_odom', executable='stereo_odometry', output='screen',
-        parameters=[common, {'publish_tf': False, 'subscribe_odom_info': False},
-                    planar, {'Odom/Strategy': '0', 'Vis/MinInliers': '15'}],
+        parameters=[common, {'publish_tf': False, 'subscribe_odom_info': False,
+                            # a lost frame must not reach the EKF as a (0,0) pose with zero covariance
+                            'publish_null_when_lost': False,
+                            # EKF pose as motion prior, and restart VO after a lost frame
+                            'guess_frame_id': 'odom'},
+                    planar, {'Odom/Strategy': '0', 'Vis/MinInliers': '15', 'Odom/ResetCountdown': '1'}],
         remappings=remap + [('odom', '/vo/odom')])
 
     ekf = Node(package='robot_localization', executable='ekf_node', name='ekf_filter_node',
@@ -64,6 +68,13 @@ def generate_launch_description():
         'Grid/NormalsSegmentation': 'false',
         'Grid/RayTracing': 'true',
         'Grid/3D': 'false',
+        # Loop closures: the arena is nearly featureless, so a weak match is usually a false one
+        # (a closure with 81 deg of rotation was accepted at 20 inliers while VO was healthy).
+        'Vis/MinInliers': '40',
+        'Vis/MinInliersDistribution': '0.05',
+        'Vis/PnPReprojError': '1.0',
+        'Rtabmap/LoopThr': '0.2',
+        'RGBD/OptimizeMaxError': '2.0',
     }
     slam_map = Node(
         package='rtabmap_slam', executable='rtabmap', name='rtabmap', output='screen',
@@ -74,7 +85,9 @@ def generate_launch_description():
         package='rtabmap_slam', executable='rtabmap', name='rtabmap', output='screen',
         condition=UnlessCondition(PythonExpression(["'", mode, "' == 'mapping'"])),
         parameters=[common, rtabmap_params, planar,
-                    {'Mem/IncrementalMemory': 'false', 'Mem/InitWMWithAllNodes': 'true'}],
+                    {'Mem/IncrementalMemory': 'false', 'Mem/InitWMWithAllNodes': 'true',
+                     # the robot is placed at the map origin (start pose), not where the last session ended
+                     'RGBD/StartAtOrigin': 'true'}],
         remappings=remap)
 
     return LaunchDescription([
