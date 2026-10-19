@@ -19,6 +19,7 @@ setup(
     entry_points={
         'console_scripts': [
             'mission_manager = ugv_mission.mission_manager:main',
+            'cmd_vel_odom = ugv_mission.cmd_vel_odom:main',
         ],
     },
 )

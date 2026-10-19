@@ -8,7 +8,7 @@ W="$(cd "$(dirname "$0")/.." && pwd)"
 mkdir -p "$W/data"
 xhost +local:docker >/dev/null 2>&1 || echo "warning: xhost not available, the Gazebo window may not open"
 docker rm -f ugv-sim >/dev/null 2>&1
-docker run -d --name ugv-sim --gpus all --network host \
+docker run -d --name ugv-sim --runtime=nvidia --network host \
   -e DISPLAY="${DISPLAY:-:0}" -e QT_X11_NO_MITSHM=1 -e NVIDIA_DRIVER_CAPABILITIES=all \
   -v /tmp/.X11-unix:/tmp/.X11-unix \
   -v "$W/src:/ws/src" -v "$W/data:/ws/data" -v "$W/tools:/ws/tools" \

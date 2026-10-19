@@ -4,7 +4,7 @@ The map only covers what the camera has seen, and a goal outside the known map i
 waypoint is approached in short steps (<= STEP m) along a straight line, like a crude frontier
 exploration. A failed step is retried shorter; a waypoint that cannot be approached is skipped.
 
-usage (inside the container): python3 /ws/tools/survey.py
+usage (inside the container): python3 /ws/tools/survey.py [N]   (N = only the first N waypoints)
 """
 import math
 import sys
@@ -91,11 +91,12 @@ def main():
     n.nav.wait_for_server()
     n.pose()
     ok = 0
-    for i, (x, y) in enumerate(WAYPOINTS):
+    wps = WAYPOINTS[:int(sys.argv[1])] if len(sys.argv) > 1 else WAYPOINTS
+    for i, (x, y) in enumerate(wps):
         r = n.approach(x, y)
         ok += r == 'ok'
         print(f'waypoint {i} ({x}, {y}): {r}', flush=True)
-    print(f'survey done: {ok}/{len(WAYPOINTS)} waypoints reached', flush=True)
+    print(f'survey done: {ok}/{len(wps)} waypoints reached', flush=True)
     rclpy.shutdown()
 
 

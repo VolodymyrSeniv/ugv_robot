@@ -20,6 +20,8 @@ def generate_launch_description():
     mission = Node(package='ugv_mission', executable='mission_manager', output='screen',
                    parameters=[{'use_sim_time': True,
                                 'jump_guard': LaunchConfiguration('jump_guard')}])
+    cmd_odom = Node(package='ugv_mission', executable='cmd_vel_odom', output='log',
+                    parameters=[{'use_sim_time': True}])
     return LaunchDescription([
         DeclareLaunchArgument('jump_guard', default_value='true'),
-        nav2, mission])
+        nav2, mission, cmd_odom])
